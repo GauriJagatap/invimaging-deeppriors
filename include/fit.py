@@ -6,7 +6,12 @@ import numpy as np
 from scipy.linalg import hadamard
 from scipy.stats import ortho_group
 from .helpers import *
-dtype = torch.cuda.FloatTensor
+if torch.cuda.device_count()==0:
+    dtype = torch.FloatTensor
+    device = 'cpu'
+else:
+    dtype = torch.cuda.FloatTensor
+    device = 'cuda'
 import time
 
 def apply_f(x,Ameas,model):
@@ -45,11 +50,10 @@ def WeightMask(weights,total_layers):
     else:
         raise ValueError('Require channel structure to match wavelet decomposition')
     mask = torch.from_numpy(mask).to(torch.float)
-    maskedW = mask.to('cuda')*weights
+    maskedW = mask.to(device)*weights
     return maskedW
 
 def fit(net,
-        img_noisy_var,
         num_channels,
         img_clean_var,
         num_iter = 5000,
@@ -111,9 +115,10 @@ def fit(net,
             B = Variable(torch.tensor(np.identity(width*height,dtype=float)))
             idx = np.random.choice(width*height,num_channels[0])
             net_input.data = B[list(idx),:].view(-1,num_channels[0],width,height)
+        elif code=='xavier':
+            torch.nn.init.xavier_uniform(net_input.data)
         
-        #torch.nn.init.xavier_uniform(net_input.data)
-        net_input.data *= 1./10
+        net_input.data *= 1./5
         
     net_input_saved = net_input.data.clone()
     noise = net_input.data.clone()
@@ -124,12 +129,11 @@ def fit(net,
 
     if(opt_input == True): # optimizer over the input as well
         net_input.requires_grad = True
-        print('optimizing over latent code B1')
+        print('optimizing over latent code Z1')
         p += [net_input]
     else:
-        print('not optimizing over latent code B1')
+        print('not optimizing over latent code Z1')
 
-    mse_wrt_noisy = np.zeros(num_iter)
     mse_wrt_truth = np.zeros(num_iter)
     mse_outer = np.zeros(num_iter)
     
@@ -140,9 +144,8 @@ def fit(net,
         print("optimize decoder with adam", LR)
         optimizer = torch.optim.Adam(p, lr=LR,weight_decay=weight_decay)
 
-    mse = torch.nn.MSELoss() #.type(dtype) 
-    noise_energy = mse(img_noisy_var, img_clean_var)
-
+    mse = torch.nn.MSELoss() 
+    
     if find_best:
         best_net = copy.deepcopy(net)
         best_mse = 1000000.0
@@ -152,13 +155,12 @@ def fit(net,
         if model==2 or model==3:
             x = Variable(torch.zeros([out_channels,int(w),int(w)]))
         elif model==1:
-            x = Variable(torch.zeros(img_noisy_var.shape))
-        x = x.to('cuda')
+            x = Variable(torch.zeros(img_clean_var.shape))
+        x = x.to(device)
         
         x.data = net(net_input.type(dtype))
-        #torch.nn.init.xavier_uniform(x.data)
-        x.data *= 1/10
         x_in = x.data.clone()
+        
         print("optimize least squares loss with SGD")
         x.requires_grad=True
         x.retain_grad()
@@ -175,21 +177,14 @@ def fit(net,
             #################
             if lr_decay_epoch is not 0:
                 optimizer = exp_lr_scheduler(optimizer, i, init_lr=LR, lr_decay_epoch=lr_decay_epoch,factor=0.7)
-            if reg_noise_std > 0:
-                if i % reg_noise_decayevery == 0:
-                    reg_noise_std *= 0.7
-                net_input = Variable(net_input_saved + (noise.normal_() * reg_noise_std))
-
+                
             #################
             def closure():
                 optimizer.zero_grad()           
                 outp = net(net_input.type(dtype))
-                loss = mse(apply_f(outp,Ameas,model), img_noisy_var)
+                loss = mse(apply_f(outp,Ameas,model), img_clean_var)
                 loss.backward()
-                mse_wrt_noisy[i] = loss.data.cpu().numpy()
-                # the actual loss 
-                true_loss = mse(apply_f(Variable(outp.data, requires_grad=False),Ameas,model), img_clean_var)
-                mse_wrt_truth[i] = true_loss.data.cpu().numpy()
+                mse_wrt_truth[i] = loss.data.cpu().numpy()
                 return loss
             
             loss = optimizer.step(closure) 
@@ -198,7 +193,7 @@ def fit(net,
 
             if find_best:
                 # if training loss improves by at least one percent, we found a new best net
-                if best_mse > 1.005*loss.detach().cpu().numpy():
+                if best_mse > 1.01*loss.detach().cpu().numpy():
                     best_mse = loss.detach().cpu().numpy()
                     best_net = copy.deepcopy(net)
 
@@ -212,61 +207,40 @@ def fit(net,
             if lr_decay_epoch is not 0:
                 optimizer_LS = exp_lr_scheduler(optimizer_LS, i, init_lr=LR_LS, lr_decay_epoch=lr_decay_epoch,factor=0.7) 
                 optimizer = exp_lr_scheduler(optimizer, i, init_lr=LR, lr_decay_epoch=lr_decay_epoch,factor=0.9) 
-            if reg_noise_std > 0:
-                if i % reg_noise_decayevery == 0:
-                    reg_noise_std *= 0.7
-                net_input = Variable(net_input_saved+ (noise.normal_() * reg_noise_std))
             if i % decay_every == 0:
                 numit_inner = round(1.2*numit_inner)
                 print('max iters for inner loop set to', numit_inner,'\n')
             #################
             #gradient step for least squares problem
-            #def closure():
             with torch.no_grad():
                 loss_pre = mse(apply_f(x,Ameas,model), img_clean_var)
-                #print('loss prior to gradient step: ',loss_pre)
             optimizer_LS.zero_grad()
             output = apply_f(x,Ameas,model)
-            loss_LS = mse(output,img_noisy_var)
-            loss_LS.backward()
-            #    return loss_LS
-            
+            loss_LS = mse(output,img_clean_var)
+            loss_LS.backward()           
             optimizer_LS.step()
-            mse_wrt_noisy[i] = loss_LS.item()
-            with torch.no_grad():
-                true_loss = mse(apply_f(x,Ameas,model), img_clean_var)
-                
-            mse_wrt_truth[i] = true_loss.data.cpu().numpy()
-            print ('Iteration %05d   Train loss %f ' % (i, mse_wrt_noisy[i]), '\r', end='')
-            #print('optimized outer LS, now executing projection step gradient')
+            mse_wrt_truth[i] = loss_LS.item()
+            print ('Iteration %05d   Train loss %f ' % (i, mse_wrt_truth[i]), '\r', end='')
             
             for j in range(numit_inner):
-                #def closure():
                 optimizer.zero_grad()          
                 out = net(net_input.type(dtype))
-                #decoder loss 
-                #loss_inner = mse(Variable(out.data,requires_grad=True),Variable(x.data,requires_grad=False))
                 loss_inner = mse(out,x)
                 loss_inner.backward()
-                    
-                #return loss_inner
-                #optimizer.step(closure)
                 optimizer.step()
                 if print_inner:
                     print ('Inner iteration %05d  Train loss %f' % (j, loss_inner.detach().cpu().numpy()))
                     
             #project on learned network
             x.data = net(net_input.type(dtype))
-            loss_updated = mse(apply_f(Variable(x.data, requires_grad=True),Ameas,model), img_noisy_var)
-            #print('Loss after projection', loss_updated.item())
+            loss_updated = mse(apply_f(Variable(x.data, requires_grad=True),Ameas,model), img_clean_var)
             if find_best:
                 # if training loss improves by at least one percent, we found a new best net
-                if best_mse > 1.005*loss_updated.item():
+                if best_mse > 1.01*loss_updated.item():
                     best_mse = loss_updated.item()
                     best_net = copy.deepcopy(net)
                     
         if find_best:
             net = best_net
         
-        mse_wrt_truth = mse_wrt_noisy[:]
-    return mse_wrt_noisy, mse_wrt_truth,net_input_saved, net, net_input, x_in
+    return mse_wrt_truth,net_input_saved, net, net_input, x_in
