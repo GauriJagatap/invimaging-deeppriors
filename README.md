@@ -1,4 +1,4 @@
-Code accompanying paper titled "Algorithmic Guarantees for Inverse Imaging with Untrained Network Priors", Advances in Neural Information Processing Systems (NeurIPS), 2019.
+Code accompanying paper G. Jagatap and C. Hegde, "Algorithmic Guarantees for Inverse Imaging with Untrained Network Priors", Advances in Neural Information Processing Systems (NeurIPS), 2019.
 
 For details please refer to the preprint available at: https://arxiv.org/abs/1906.08763
 
