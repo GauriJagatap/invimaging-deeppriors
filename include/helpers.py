@@ -70,3 +70,14 @@ def ComputeInitErr(nettype,netintype,lvls):
         del3 = np.linalg.norm(W3-W3_0)/np.linalg.norm(W3)
         print(del3)
     return None  
+
+def gamma_correction(image, gamma):
+    corrected_image = image**(gamma)
+    return corrected_image
+
+def add_noise(image, SNR):
+    noise = np.random.randn(image.shape[0],image.shape[1],image.shape[2])
+    sigma = image.max()/(10**(SNR/20))
+    noise = sigma*noise
+    noisy_image = image + noise
+    return noisy_image

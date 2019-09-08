@@ -118,7 +118,7 @@ def fit(net,
         elif code=='xavier':
             torch.nn.init.xavier_uniform(net_input.data)
         
-        net_input.data *= 1./5
+        net_input.data *= 1./10
         
     net_input_saved = net_input.data.clone()
     noise = net_input.data.clone()
